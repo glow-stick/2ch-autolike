@@ -15,6 +15,8 @@ from PIL import Image
 
 debug = False
 
+agent = "Mozilla/5.0 (X11; Linux x86_64; rv:73.0) Gecko/20100101 Firefox/73.0"
+
 class Comparator:
     def __init__(self, bytecode, images):
         buffer_ptr = 102400 # 100K
@@ -148,7 +150,7 @@ class Autoliker:
                 if debug:
                     print(str(thread_index) + " getting " + str(req_id) + " " + req["url"])
                 if method == "GET":
-                    res = requests.get(req["url"], proxies=proxy, timeout=(2, 2))
+                    res = requests.get(req["url"], proxies=proxy, headers={"User-Agent": agent}, timeout=(2, 2))
                 if debug:
                     print(str(thread_index) + " got " + str(req_id))
 
