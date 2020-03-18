@@ -5,13 +5,15 @@ import time
 import requests
 import threading
 import random
-import js_regex
+import re
 import json
 import sys
 import base64
 import wasmer
 import io
 from PIL import Image
+
+debug = False
 
 class Comparator:
     def __init__(self, bytecode, images):
@@ -63,13 +65,11 @@ class Autoliker:
 
         self.likes_count = 5
         self.posts_liked = dict(posts_liked)
+        self.post_images = {}
         self.mutex_posts = threading.Lock()
 
         self.threads_loaded = 0
         self.mutex_threads_loaded = threading.Lock()
-
-        self.post_images = {}
-        self.mutex_post_images = threading.Lock()
 
         threads_count = 10
 
@@ -106,10 +106,8 @@ class Autoliker:
                 current_req = self.net_requests[int(thread_index * len(self.net_requests) / (1.0 * threads_count))]
             else:
                 print("getting threads")
-                self._do_proxy_request({"method": "GET", "url": "https://2ch.hk/" + self.board + "/catalog.json"}, True, self._on_threads_received, None, False)
+                self._do_proxy_request({"method": "GET", "url": "https://2ch.hk/" + self.board + "/catalog.json"}, True, self._on_threads_received, None)
             self.mutex_net_requests.release()
-
-#            print(str(thread_index) + " requering")
 
             if current_req:
                 req_id = current_req[0]
@@ -119,6 +117,9 @@ class Autoliker:
                 callback_continue = current_req[4]
             else:
                 continue
+
+            if debug:
+                print(str(thread_index) + " requering")
 
             if callback_continue and not callback_continue(req_id):
                 self.mutex_net_requests.acquire()
@@ -144,13 +145,16 @@ class Autoliker:
             method = req["method"]
             try:
                 res = None
-#                print(str(thread_index) + " getting " + str(req_id) + " " + req["url"])
+                if debug:
+                    print(str(thread_index) + " getting " + str(req_id) + " " + req["url"])
                 if method == "GET":
                     res = requests.get(req["url"], proxies=proxy, timeout=(2, 2))
-#                print(str(thread_index) + " got " + str(req_id))
+                if debug:
+                    print(str(thread_index) + " got " + str(req_id))
 
                 self.mutex_net_requests.acquire()
-#                print(str(thread_index) + " locked")
+                if debug:
+                    print(str(thread_index) + " locked")
                 if not req_id in [r[0] for r in self.net_requests]:
                     self.mutex_net_requests.release()
                     if not callback_once:
@@ -161,18 +165,21 @@ class Autoliker:
                         self.net_requests.pop(i)
                         break
                 self.mutex_net_requests.release()
-#                print(str(thread_index) + " callbacking " + req["url"])
+                if debug:
+                    print(str(thread_index) + " callbacking " + req["url"])
                 try:
                     callback_res(req_id, res)
                 except Exception as e:
                     print("ERR")
                     print(e)
-#                print(str(thread_index) + " done")
+                if debug:
+                    print(str(thread_index) + " done")
             except Exception as e:
-#                print(e)
+                if debug:
+                    print(e)
                 continue
 
-    def _do_proxy_request(self, req, callback_once, callback_res, callback_continue, need_lock):
+    def _do_proxy_request(self, req, callback_once, callback_res, callback_continue):
         req_id = -1
 
         self.mutex_net_req_id.acquire()
@@ -180,11 +187,7 @@ class Autoliker:
         req_id = self.net_req_id
         self.mutex_net_req_id.release()
 
-        if need_lock:
-            self.mutex_net_requests.acquire()
         self.net_requests += [(req_id, req, callback_once, callback_res, callback_continue)]
-        if need_lock:
-            self.mutex_net_requests.release()
 
     def _post_check_regex(self, post_id, text):
         replacements = {
@@ -227,68 +230,88 @@ class Autoliker:
                 post_text += c
 
         for regex in self.regexps_dislike:
-            if regex.search(post_text) != None:
-                self.posts_liked[post_id] = [False, False, 0, self.likes_count]
-                return True
+            if regex and regex.search(post_text) != None:
+                return 2
         for regex in self.regexps_like:
             if regex.search(post_text) != None:
-                self.posts_liked[post_id] = [True, False, 0, self.likes_count]
-                return True
-        return False
+                return 1
+        return 0
 
     def _post_check_image(self, post_id, image):
         ret = self.comparator.compare(image["pixels"], image["width"], image["height"])
         if ret:
             print(post_id + " matches!")
+        return 2 if ret else 0
+
+    def _post_action(self, post_id, action):
+        if action == 0:
+            return False
+        if action == 1:
+            self.posts_liked[post_id] = [True, False, 0, self.likes_count]
+            return True
+        if action == 2:
             self.posts_liked[post_id] = [False, False, 0, self.likes_count]
-        return ret
+            return True
 
     def _on_post_ready(self, post_id, text, images):
         if post_id in self.posts_liked:
             return
-        self.mutex_posts.acquire()
-        for image in images:
-            if self._post_check_image(post_id, images[image]):
-                self.mutex_posts.release()
-                return
-        self._post_check_regex(post_id, text)
-        self.mutex_posts.release()
 
-    def _on_post_data_loaded(self, post_id, text, path, data):
-#        print("_on_post_data_loaded lock")
-        self.mutex_post_images.acquire()
+        for image in images:
+            if self._post_action(post_id, self._post_check_image(post_id, images[image])):
+                return
+        try:
+            if self._post_action(post_id, self._post_check_regex(post_id, text)):
+                return
+        except Exception as e:
+            print(e)
+
+    def _on_post_data_loaded(self, post_id, text, path, data, need_lock):
+        if need_lock:
+            if debug:
+                print("_on_post_data_loaded locking")
+            self.mutex_posts.acquire();
+            if debug:
+                print("_on_post_data_loaded locked")
         post_images = self.post_images[post_id]
         post_images["files"][path] = data
         if len(post_images["files"]) >= post_images["cnt"]:
             self._on_post_ready(post_id, text, post_images["files"])
-#        print("_on_post_data_loaded release")
-        self.mutex_post_images.release()
+        if need_lock:
+            if debug:
+                print("_on_post_data_loaded release")
+            self.mutex_posts.release();
 
     def _on_post_image_received(self, req_id, res, post_id, post_text, path):
         image = Image.open(io.BytesIO(res.content))
         pixels = [item for sublist in image.convert("RGBA").getdata() for item in sublist]
-        self._on_post_data_loaded(post_id, post_text, path, {"pixels": pixels, "width": image.width, "height": image.height})
+        self._on_post_data_loaded(post_id, post_text, path, {"pixels": pixels, "width": image.width, "height": image.height}, True)
 
     def _post_load_files(self, post_id, post_text, files):
         count = len(files)
-        self.mutex_post_images.acquire()
         if not post_id in self.post_images:
             self.post_images[post_id] = {"cnt": len(files), "files": {}}
         post_images = self.post_images[post_id]
         for f in files:
             path = f["thumbnail"]
             if path in post_images:
-                self._on_post_data_loaded(post_id, post_text, path, post_images[path])
+                self._on_post_data_loaded(post_id, post_text, path, post_images[path], False)
             else:
+                self.mutex_net_requests.acquire()
                 callback = lambda req_id, res, post_id=post_id, post_text=post_text, path=path: self._on_post_image_received(req_id, res, post_id, post_text, path)
-                self._do_proxy_request({"method": "GET", "url": "https://2ch.hk" + path, "noproxy": True}, True, callback, None, True)
-        self.mutex_post_images.release()
+                self._do_proxy_request({"method": "GET", "url": "https://2ch.hk" + path, "noproxy": True}, True, callback, None)
+                self.mutex_net_requests.release()
 
     def _on_posts_received(self, count, req_id, res):
         thread = res.json()
         thread_num = thread["current_thread"]
         posts = thread["threads"][0]["posts"]
 
+        if debug:
+            print("_on_posts_received locking")
+        self.mutex_posts.acquire()
+        if debug:
+            print("_on_posts_received locked")
         for post in posts:
             post_id = str(post["num"])
             post_text = post["comment"]
@@ -297,7 +320,6 @@ class Autoliker:
             else:
                 self._on_post_ready(post_id, post_text, {})
 
-        self.mutex_posts.acquire()
         f = open("posts_" + self.board + ".dat", "w")
         f.write(json.dumps(self.posts_liked))
         f.close()
@@ -313,11 +335,17 @@ class Autoliker:
     def _on_threads_received(self, req_id, res):
         threads = [thread["num"] for thread in sorted(res.json()["threads"], key=lambda thread: thread["lasthit"])][-20:]
         print(str(len(threads)) + " threads loaded")
+        self.mutex_net_requests.acquire()
         for thread in threads:
-            self._do_proxy_request({"method": "GET", "url": "https://2ch.hk/" + self.board + "/res/" + thread + ".json"}, True, lambda req_id, res: self._on_posts_received(len(threads), req_id, res), None, True)
+            self._do_proxy_request({"method": "GET", "url": "https://2ch.hk/" + self.board + "/res/" + thread + ".json"}, True, lambda req_id, res: self._on_posts_received(len(threads), req_id, res), None)
+        self.mutex_net_requests.release()
 
     def _on_post_can_continue(self, post_id, req_id):
+        if debug:
+            print("_on_post_can_continue locking")
         self.mutex_posts.acquire()
+        if debug:
+            print("_on_post_can_continue locked")
 
         post = self.posts_liked[post_id]
         res = post[2] < post[3]
@@ -328,7 +356,11 @@ class Autoliker:
         return res
 
     def _on_post_like(self, post_id, req_id, res):
+        if debug:
+            print("_on_post_like locking")
         self.mutex_posts.acquire()
+        if debug:
+            print("_on_post_like locked")
         post = self.posts_liked[post_id]
         post[1] = post[2] >= post[3]
         if not res.json()["Error"]:
@@ -340,7 +372,11 @@ class Autoliker:
 
     def _worker_posts(self):
         while True:
+            if debug:
+                print("_worker_posts locking")
             self.mutex_posts.acquire()
+            if debug:
+                print("_worker_posts locked")
             for post_id in self.posts_liked:
                 post = self.posts_liked[post_id]
                 method = "like" if post[0] else "dislike"
@@ -348,7 +384,9 @@ class Autoliker:
                     post[1] = True
                     callback_res = lambda req_id, res, post_id=post_id: self._on_post_like(post_id, req_id, res)
                     callback_continue = lambda req_id, post_id=post_id: self._on_post_can_continue(post_id, req_id)
-                    self._do_proxy_request({"method": "GET", "url": "https://2ch.hk/api/" + method + "?board=" + self.board + "&num=" + post_id}, False, callback_res, callback_continue, True)
+                    self.mutex_net_requests.acquire()
+                    self._do_proxy_request({"method": "GET", "url": "https://2ch.hk/api/" + method + "?board=" + self.board + "&num=" + post_id}, False, callback_res, callback_continue)
+                    self.mutex_net_requests.release()
             self.mutex_posts.release()
 
 def main():
@@ -371,8 +409,8 @@ def main():
 
     comparator = Comparator(open("comparator.wasm", "rb").read(), images)
 
-    regexps_like = [js_regex.compile(regex.split("\n")[0]) for regex in open("regexps_like").readlines()]
-    regexps_dislike = [js_regex.compile(regex.split("\n")[0]) for regex in open("regexps_dislike").readlines()]
+    regexps_like = [re.compile(regex.split("\n")[0]) for regex in open("regexps_like").readlines()]
+    regexps_dislike = [re.compile(regex.split("\n")[0]) for regex in open("regexps_dislike").readlines()]
     proxies = Proxies([proxy.split("\n")[0] for proxy in open("proxies").readlines()])
     autoliker = Autoliker(board, comparator, posts_liked, proxies, regexps_like, regexps_dislike)
     autoliker.start()
