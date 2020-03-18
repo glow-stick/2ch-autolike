@@ -42,7 +42,9 @@ class Proxies:
     def next_proxy(self):
         proxy = self.proxies[self.current_proxy]
         self.current_proxy = (self.current_proxy + 1) % len(self.proxies)
-        return {"http": "http://" + proxy, "https": "https://" + proxy}
+        if not "://" in proxy:
+            proxy = "httos://" + proxy
+        return {"http": proxy, "https": proxy}
 
 class Autoliker:
     def __init__(self, board, comparator, posts_liked, proxies, regexps_like, regexps_dislike):
@@ -59,9 +61,6 @@ class Autoliker:
         self.net_req_id = 0
         self.mutex_net_req_id = threading.Lock()
 
-        self.net_done_reqs = []
-        self.mutex_net_done_reqs = threading.Lock()
-
         self.likes_count = 5
         self.posts_liked = dict(posts_liked)
         self.mutex_posts = threading.Lock()
@@ -72,13 +71,10 @@ class Autoliker:
         self.post_images = {}
         self.mutex_post_images = threading.Lock()
 
-        threads_count = 100
+        threads_count = 10
 
         self.net_requests = []
-        self.net_requests_remove = []
         self.mutex_net_requests = threading.Lock()
-
-        self.net_barrier = threading.Barrier(threads_count, action=self._remove_requests)
 
         self.workers_net = []
         for i in range(threads_count):
@@ -96,15 +92,6 @@ class Autoliker:
         for thread in self.workers_net:
             thread.join()
 
-    def _remove_requests(self):
-        self.mutex_net_requests.acquire()
-        self.net_requests_remove = list(set(self.net_requests_remove))
-        self.net_requests_remove.sort(reverse=True)
-        for i in self.net_requests_remove:
-            self.net_requests.pop(i)
-        self.net_requests_remove = []
-        self.mutex_net_requests.release()
-
     def _worker_net(self, thread_index, threads_count):
         while True:
             req_id = -1
@@ -113,21 +100,16 @@ class Autoliker:
             callback_res = None
             callback_continue = None
             current_req = None
-            current_req_index = -1
-
-            try:
-                self.net_barrier.wait()
-            except:
-                pass
 
             self.mutex_net_requests.acquire()
             if self.net_requests:
-                current_req_index = int(thread_index * len(self.net_requests) / (1.0 * threads_count))
-                current_req = self.net_requests[current_req_index]
+                current_req = self.net_requests[int(thread_index * len(self.net_requests) / (1.0 * threads_count))]
             else:
                 print("getting threads")
                 self._do_proxy_request({"method": "GET", "url": "https://2ch.hk/" + self.board + "/catalog.json"}, True, self._on_threads_received, None, False)
             self.mutex_net_requests.release()
+
+#            print(str(thread_index) + " requering")
 
             if current_req:
                 req_id = current_req[0]
@@ -137,18 +119,21 @@ class Autoliker:
                 callback_continue = current_req[4]
             else:
                 continue
-            
+
             if callback_continue and not callback_continue(req_id):
                 self.mutex_net_requests.acquire()
-                self.net_requests_remove += [current_req_index]
+                for i in range(len(self.net_requests)):
+                    if self.net_requests[i][0] == req_id:
+                        self.net_requests.pop(i)
+                        break
                 self.mutex_net_requests.release()
                 continue
 
-            self.mutex_net_done_reqs.acquire()
-            if req_id in self.net_done_reqs:
-                self.mutex_net_done_reqs.release()
+            self.mutex_net_requests.acquire()
+            if not req_id in [r[0] for r in self.net_requests]:
+                self.mutex_net_requests.release()
                 continue
-            self.mutex_net_done_reqs.release()
+            self.mutex_net_requests.release()
 
             proxy = None
             if not "noproxy" in req or not req["noproxy"]:
@@ -159,27 +144,32 @@ class Autoliker:
             method = req["method"]
             try:
                 res = None
+#                print(str(thread_index) + " getting " + str(req_id) + " " + req["url"])
                 if method == "GET":
-                    res = requests.get(req["url"], proxies=proxy, timeout=(0.5, 0.5))
+                    res = requests.get(req["url"], proxies=proxy, timeout=(2, 2))
+#                print(str(thread_index) + " got " + str(req_id))
 
-                self.mutex_net_done_reqs.acquire()
-                if req_id in self.net_done_reqs:
-                    self.mutex_net_done_reqs.release()
+                self.mutex_net_requests.acquire()
+#                print(str(thread_index) + " locked")
+                if not req_id in [r[0] for r in self.net_requests]:
+                    self.mutex_net_requests.release()
                     if not callback_once:
                         callback_res(req_id, res)
                     continue
-                self.net_done_reqs += [req_id]
-                self.mutex_net_requests.acquire()
-                self.net_requests_remove += [current_req_index]
+                for i in range(len(self.net_requests)):
+                    if self.net_requests[i][0] == req_id:
+                        self.net_requests.pop(i)
+                        break
                 self.mutex_net_requests.release()
-                self.mutex_net_done_reqs.release()
-
+#                print(str(thread_index) + " callbacking " + req["url"])
                 try:
                     callback_res(req_id, res)
                 except Exception as e:
                     print("ERR")
                     print(e)
+#                print(str(thread_index) + " done")
             except Exception as e:
+#                print(e)
                 continue
 
     def _do_proxy_request(self, req, callback_once, callback_res, callback_continue, need_lock):
@@ -265,11 +255,13 @@ class Autoliker:
         self.mutex_posts.release()
 
     def _on_post_data_loaded(self, post_id, text, path, data):
+#        print("_on_post_data_loaded lock")
         self.mutex_post_images.acquire()
         post_images = self.post_images[post_id]
         post_images["files"][path] = data
         if len(post_images["files"]) >= post_images["cnt"]:
             self._on_post_ready(post_id, text, post_images["files"])
+#        print("_on_post_data_loaded release")
         self.mutex_post_images.release()
 
     def _on_post_image_received(self, req_id, res, post_id, post_text, path):
@@ -313,7 +305,7 @@ class Autoliker:
 
         self.mutex_threads_loaded.acquire()
         self.threads_loaded += 1
-        print("Thread " + thread_num + " loaded. " + str(len(posts)) + " posts (" + str(self.threads_loaded) + " / " + str(count) + ")")
+        print(str(req_id) + " thread " + thread_num + " loaded. " + str(len(posts)) + " posts (" + str(self.threads_loaded) + " / " + str(count) + ")")
         if self.threads_loaded >= count:
             self.threads_loaded = 0
         self.mutex_threads_loaded.release()
