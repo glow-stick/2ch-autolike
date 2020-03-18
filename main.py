@@ -311,7 +311,7 @@ class Autoliker:
         self.mutex_threads_loaded.release()
 
     def _on_threads_received(self, req_id, res):
-        threads = [thread["num"] for thread in sorted(res.json()["threads"], key=lambda thread: thread["lasthit"])][-10:]
+        threads = [thread["num"] for thread in sorted(res.json()["threads"], key=lambda thread: thread["lasthit"])][-20:]
         print(str(len(threads)) + " threads loaded")
         for thread in threads:
             self._do_proxy_request({"method": "GET", "url": "https://2ch.hk/" + self.board + "/res/" + thread + ".json"}, True, lambda req_id, res: self._on_posts_received(len(threads), req_id, res), None, True)
