@@ -39,7 +39,7 @@ class Multitor:
             self.lock.release()
 
             try:
-                tor = stem.process.launch_tor_with_config(config = {"SocksPort": str(port), "DataDirectory": "./tordata_" + str(port)})
+                tor = stem.process.launch_tor_with_config(config = {"SocksPort": str(port), "DataDirectory": "./tordata/" + str(port)})
             except Exception as e:
                 print(str(port) + ": " + str(e))
                 return
