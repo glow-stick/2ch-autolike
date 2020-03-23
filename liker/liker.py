@@ -4,6 +4,7 @@
 import time
 import threading
 import io
+import json
 from PIL import Image
 from thumbnail import Thumbnail
 from checker import LikeAction
@@ -12,18 +13,17 @@ class Post:
     def __init__(self, num, text, target_likes, images):
         self.num = num
         self.text = text
-        self.target_likes = target_likes
         self.action = LikeAction.NONE
+        self.target_likes = target_likes
         self.likes = 0
         self.images = {}
         for path in images:
             self.images[path] = None
 
 class Liker:
-    def __init__(self, board, checker, posts_liked, network):
+    def __init__(self, board, checker, posts, network):
         self.board = board
         self.checker = checker
-        self.posts_liked = posts_liked
         self.network = network
         self.network.set_on_empty_callback(lambda: self.network.get_request("%s/%s/catalog.json" % (self.api, self.board), self._on_threads, True, True))
         self.api = "https://2ch.hk"
@@ -31,6 +31,12 @@ class Liker:
         self.lasthit = -1
         self.posts = {}
         self.lock = threading.Lock()
+        for post_id in posts:
+            post = posts[post_id]
+            self.posts[post_id] = Post(post_id, None, post["target_likes"], [])
+            self.posts[post_id].likes = post["likes"]
+            self.posts[post_id].action = LikeAction(post["action"])
+            self._process_post(self.posts[post_id])
 
     def _on_threads(self, res):
         threads = [thread for thread in sorted(res.json()["threads"], key=lambda thread: thread["lasthit"], reverse=True)[:20] if thread["lasthit"] > self.lasthit]
@@ -86,15 +92,32 @@ class Liker:
         self._process_post(post)
 
     def _process_post(self, post):
+        if post.likes >= post.target_likes:
+            return
         if post.action == LikeAction.LIKE:
             self.network.get_request("%s/api/like?board=%s&num=%s" % (self.api, self.board, post.num), lambda res, post=post: self._on_post_like(post, True, res), False, True)
         if post.action == LikeAction.DISLIKE:
             self.network.get_request("%s/api/dislike?board=%s&num=%s" % (self.api, self.board, post.num), lambda res, post=post: self._on_post_like(post, False, res), False, True)
 
     def _on_post_like(self, post, like, res):
+        if res.json()["Error"] != None:
+            print("Post >>%s %sliking failed" % (post.num, "" if like else "dis"))
+            self._process_post(post)
+            return
+
         self.lock.acquire()
         post.likes += 1
-        print("Post #%s %sliked (%d / %d)" % (post.num, "" if like else "dis", post.likes, self.likes_count))
-        if post.likes < post.target_likes:
-            self._process_post(post)
+
+        print("Post >>%s %sliked (%d / %d)" % (post.num, "" if like else "dis", post.likes, self.likes_count))
+
+        self._process_post(post)
+
+        data = {}
+        for post_id in self.posts:
+            post = self.posts[post_id]
+            data[post.num] = {"action": int(post.action), "likes": post.likes, "target_likes": post.target_likes}
+        f = open("data/posts_%s.json" % self.board, "w")
+        f.write(json.dumps(data))
+        f.close()
+
         self.lock.release()

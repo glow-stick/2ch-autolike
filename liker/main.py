@@ -3,6 +3,7 @@
 
 import sys
 import base64
+import json
 
 from proxies import Proxies
 from network import Network
@@ -17,12 +18,10 @@ def main():
 
     board = sys.argv[1]
 
-    posts_liked = {}
+    posts = {}
     try:
-        posts_liked = json.loads(open("posts_" + board + ".dat").read())
-        for post_id in posts_liked:
-            posts_liked[post_id][1] = False
-    except:
+        posts = json.loads(open("data/posts_%s.json" % board).read())
+    except Exception as e:
         pass
 
     regexps_like = [regex.split("\n")[0] for regex in open("data/regexps_like").readlines()]
@@ -33,7 +32,7 @@ def main():
     proxies = Proxies([proxy.split("\n")[0] for proxy in open("data/proxies").readlines()])
     network = Network(proxies, 10)
 
-    liker = Liker(board, checker, posts_liked, network)
+    liker = Liker(board, checker, posts, network)
 
     network.start()
     network.join()

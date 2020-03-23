@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*- 
 
 import re
-from enum import Enum
+from enum import IntEnum
 
-class LikeAction(Enum):
+class LikeAction(IntEnum):
     NONE = 0
     LIKE = 1
     DISLIKE = 2
@@ -40,6 +40,7 @@ class Checker:
         }
 
     def _check_regex(self, text):
+        text = text.lower()
         for replacement in self.replacements:
             for r in self.replacements[replacement]:
                 text = text.replace(r, replacement)
@@ -64,3 +65,4 @@ class Checker:
             if action != LikeAction.NONE:
                 print(post.num + " matches!")
                 return action
+        return LikeAction.NONE
