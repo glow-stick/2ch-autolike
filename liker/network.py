@@ -7,12 +7,13 @@ import requests
 agent = "Mozilla/5.0 (X11; Linux x86_64; rv:73.0) Gecko/20100101 Firefox/73.0"
 
 class Request:
-    def __init__(self, method, url, data, callback, callback_once, proxy):
+    def __init__(self, method, url, data, callback, callback_continue, callback_once, proxy):
         self.id = -1
         self.method = method
         self.url = url
         self.data = {}
         self.callback = callback
+        self.callback_continue = callback_continue
         self.callback_once = callback_once
         self.proxy = proxy
 
@@ -23,6 +24,7 @@ class Network:
         self.reqs = []
         self.threads = []
         self.on_empty_cb = None
+        self.barrier = threading.Barrier(workers)
         self.lock = threading.RLock()
         for i in range(workers):
             self.threads += [threading.Thread(target=lambda i=i, total=workers: self._worker(i, total))]
@@ -43,6 +45,20 @@ class Network:
 
             if not req:
                 continue
+
+            try:
+                self.barrier.wait()
+                if req.callback_continue and not req.callback_continue(req.id):
+                    self.lock.acquire()
+                    for i, r in enumerate(self.reqs):
+                        if r.id == req.id:
+                            self.reqs.pop(i)
+                            break
+                    self.lock.release()
+                    continue
+            except Exception as e:
+                print("exception in network:")
+                print(e)
 
             try:
                 res = None
@@ -77,8 +93,10 @@ class Network:
         self.lock.acquire()
         req.id = self.req_id
         self.req_id += 1
+        ret = self.req_id
         self.reqs += [req]
         self.lock.release()
+        return ret
 
-    def get_request(self, url, callback, callback_once, proxy):
-        self._request(Request("GET", url, None, callback, callback_once, proxy))
+    def get_request(self, url, callback, callback_continue, callback_once, proxy):
+        return self._request(Request("GET", url, None, callback, callback_continue, callback_once, proxy))

@@ -25,11 +25,12 @@ class Liker:
         self.board = board
         self.checker = checker
         self.network = network
-        self.network.set_on_empty_callback(lambda: self.network.get_request("%s/%s/catalog.json" % (self.api, self.board), self._on_threads, True, True))
+        self.network.set_on_empty_callback(lambda: self.network.get_request("%s/%s/catalog.json" % (self.api, self.board), self._on_threads, None, True, True))
         self.api = "https://2ch.hk"
         self.likes_count = 5
         self.lasthit = -1
         self.posts = {}
+        self.req2post = {}
         self.lock = threading.Lock()
         for post_id in posts:
             post = posts[post_id]
@@ -44,7 +45,7 @@ class Liker:
             return
         self.lasthit = threads[0]["lasthit"]
         for thread in threads:
-            self.network.get_request("%s/%s/res/%s.json" % (self.api, self.board, thread["num"]), self._on_posts, True, True)
+            self.network.get_request("%s/%s/res/%s.json" % (self.api, self.board, thread["num"]), self._on_posts, None, True, True)
 
     def _on_posts(self, res):
         for post in res.json()["threads"][0]["posts"]:
@@ -72,7 +73,7 @@ class Liker:
             width = image.width
             height = image.height
         except:
-            self.network.get_request("%s%s" % (self.api, path), lambda res, post_id=post_id, path=path: self._on_thumbnail(post_id, path, res), True, True)
+            self.network.get_request("%s%s" % (self.api, path), lambda res, post_id=post_id, path=path: self._on_thumbnail(post_id, path, res), None, True, True)
             return
 
         self.lock.acquire()
@@ -95,9 +96,18 @@ class Liker:
         if post.likes >= post.target_likes:
             return
         if post.action == LikeAction.LIKE:
-            self.network.get_request("%s/api/like?board=%s&num=%s" % (self.api, self.board, post.num), lambda res, post=post: self._on_post_like(post, True, res), False, True)
+            r_id = self.network.get_request("%s/api/like?board=%s&num=%s" % (self.api, self.board, post.num), lambda res, post=post: self._on_post_like(post, True, res), self._post_continue, False, True)
+            self.req2post[r_id] = post
         if post.action == LikeAction.DISLIKE:
-            self.network.get_request("%s/api/dislike?board=%s&num=%s" % (self.api, self.board, post.num), lambda res, post=post: self._on_post_like(post, False, res), False, True)
+            r_id = self.network.get_request("%s/api/dislike?board=%s&num=%s" % (self.api, self.board, post.num), lambda res, post=post: self._on_post_like(post, False, res), self._post_continue, False, True)
+            self.req2post[r_id] = post
+
+    def _post_continue(self, req_id):
+        try:
+            post = self.req2post[req_id]
+            return post.likes < post.target_likes
+        except Exception as e:
+            return True
 
     def _on_post_like(self, post, like, res):
         if res.json()["Error"] != None:
