@@ -14,18 +14,18 @@ class Checker:
         self.re_like = [re.compile(regex) for regex in re_like]
         self.re_dislike = [re.compile(regex) for regex in re_dislike]
         self.cmp_dislike = cmp_dislike
-        self.replacements = {
+        replacements = {
             "а": ["a"],
             "б": ["6"],
             "в": ["v", "b"],
             "г": ["g"],
             "д": ["d"],
             "е": ["e"],
-            "ж": ["j"],
+            "ж": ["j", "}|{", "}i{"],
             "з": ["z", "3"],
             "и": ["i", "u"],
             "к": ["k"],
-            "л": ["l"],
+            "л": ["l", "j|", "ji"],
             "м": ["m"],
             "н": ["n"],
             "о": ["o", "0"],
@@ -35,15 +35,21 @@ class Checker:
             "т": ["t"],
             "у": ["y"],
             "ф": ["f"],
-            "х": ["x", "h", "}{"],
-            "ч": ["4"]
+            "х": ["x", "h", "}{", "]["],
+            "ч": ["4"],
+            "ы": ["b|", "bi"],
+            "я": ["9i"]
         }
+        self.replacements = []
+        for replacement in replacements:
+            for r in replacements[replacement]:
+                self.replacements += [[r, replacement]]
+        self.replacements.sort(key=lambda x: len(x[0]), reverse=True)
 
     def _check_regex(self, text):
         text = text.lower()
         for replacement in self.replacements:
-            for r in self.replacements[replacement]:
-                text = text.replace(r, replacement)
+            text = text.replace(replacement[0], replacement[1])
         for regex in self.re_dislike:
             if regex and regex.search(text) != None:
                 return LikeAction.DISLIKE
