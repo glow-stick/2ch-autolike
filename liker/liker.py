@@ -43,6 +43,7 @@ class Liker:
         threads = [thread for thread in sorted(res.json()["threads"], key=lambda thread: thread["lasthit"], reverse=True)[:20] if thread["lasthit"] > self.lasthit]
         if not threads:
             return
+        print("Received %d threads" % len(threads))
         self.lasthit = threads[0]["lasthit"]
         for thread in threads:
             self.network.get_request("%s/%s/res/%s.json" % (self.api, self.board, thread["num"]), self._on_posts, None, True, True)
@@ -97,37 +98,48 @@ class Liker:
             return
         if post.action == LikeAction.LIKE:
             r_id = self.network.get_request("%s/api/like?board=%s&num=%s" % (self.api, self.board, post.num), lambda res, post=post: self._on_post_like(post, True, res), self._post_continue, False, True)
-            self.req2post[r_id] = post
+            try:
+                self.req2post[r_id] = post
+            except:
+                pass
         if post.action == LikeAction.DISLIKE:
             r_id = self.network.get_request("%s/api/dislike?board=%s&num=%s" % (self.api, self.board, post.num), lambda res, post=post: self._on_post_like(post, False, res), self._post_continue, False, True)
-            self.req2post[r_id] = post
+            try:
+                self.req2post[r_id] = post
+            except:
+                pass
 
     def _post_continue(self, req_id):
         try:
             post = self.req2post[req_id]
+            #print(str(post.num) + ": " + str(post.likes) + " / " + str(post.target_likes) + "(" + str(req_id) + ")")
             return post.likes < post.target_likes
         except Exception as e:
             return True
 
     def _on_post_like(self, post, like, res):
-        if res.json()["Error"] != None:
-            print("Post >>%s %sliking failed" % (post.num, "" if like else "dis"))
+        try:
+            if res.json()["Error"] != None:
+                print("Post >>%s %sliking failed" % (post.num, "" if like else "dis"))
+                self._process_post(post)
+                return
+
+            self.lock.acquire()
+            post.likes += 1
+
+            print("Post >>%s %sliked (%d / %d)" % (post.num, "" if like else "dis", post.likes, self.likes_count))
+
             self._process_post(post)
-            return
 
-        self.lock.acquire()
-        post.likes += 1
+            data = {}
+            for post_id in self.posts:
+                post = self.posts[post_id]
+                data[post.num] = {"action": int(post.action), "likes": post.likes, "target_likes": post.target_likes}
+            f = open("data/posts_%s.json" % self.board, "w")
+            f.write(json.dumps(data))
+            f.close()
 
-        print("Post >>%s %sliked (%d / %d)" % (post.num, "" if like else "dis", post.likes, self.likes_count))
-
-        self._process_post(post)
-
-        data = {}
-        for post_id in self.posts:
-            post = self.posts[post_id]
-            data[post.num] = {"action": int(post.action), "likes": post.likes, "target_likes": post.target_likes}
-        f = open("data/posts_%s.json" % self.board, "w")
-        f.write(json.dumps(data))
-        f.close()
-
-        self.lock.release()
+            self.lock.release()
+        except Exception as e:
+            print("Exception in _on_post_like")
+            print(e)
